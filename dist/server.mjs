@@ -9,11 +9,8 @@ const wsPort = process.env.WS_PORT || 8998;
 
 let isSyncRunning = false;
 let syncProcess = undefined;
-// Allow external connections for WebSocket server
-const wsServer = new WebSocketServer({
-    port: wsPort,
-    host: '0.0.0.0'
-});
+// We'll attach the WebSocket server to the same HTTP server (noServer)
+let wsServer; // assigned after http server is created
 function configObjectToCommandLineArr(obj) {
     let retval = [];
     let databaseObj = obj['database'];
@@ -31,10 +28,16 @@ function configObjectToCommandLineArr(obj) {
 function runSyncProcess(configObj) {
     let cmdArgs = configObjectToCommandLineArr(configObj);
     syncProcess = child_process.fork('./dist/index.mjs', cmdArgs);
-    syncProcess.on('message', (msg) => wsServer.clients.forEach((wsClient) => wsClient.send(msg.toString())));
+    syncProcess.on('message', (msg) => {
+        if (wsServer) {
+            wsServer.clients.forEach((wsClient) => wsClient.send(msg.toString()));
+        }
+    });
     syncProcess.on('close', () => {
         isSyncRunning = false;
-        wsServer.clients.forEach((wsClient) => wsClient.send('~'));
+        if (wsServer) {
+            wsServer.clients.forEach((wsClient) => wsClient.send('~'));
+        }
     });
 }
 function postTallyXML(tallyServer, tallyPort, payload) {
@@ -174,9 +177,33 @@ const httpServer = http.createServer((req, res) => {
         res.end(contentResp);
     });
 });
+// Create WebSocket server that uses the same HTTP server (handles upgrade)
+wsServer = new WebSocketServer({ noServer: true });
+
+wsServer.on('connection', (socket) => {
+    // connection established; log client info and handle close
+    try {
+        const remote = socket._socket && socket._socket.remoteAddress ? socket._socket.remoteAddress : 'unknown';
+        console.log(`WebSocket client connected: ${remote} (total clients=${wsServer.clients.size})`);
+    }
+    catch (e) {
+        console.log('WebSocket client connected (remote unknown)');
+    }
+    socket.on('message', () => { /* ignore incoming messages */ });
+    socket.on('close', () => {
+        console.log(`WebSocket client disconnected (total clients=${wsServer.clients.size})`);
+    });
+});
+
+httpServer.on('upgrade', (request, socket, head) => {
+    wsServer.handleUpgrade(request, socket, head, (ws) => {
+        wsServer.emit('connection', ws, request);
+    });
+});
+
 httpServer.listen(httpPort, '0.0.0.0', () => {
     console.log(`HTTP Server running at http://0.0.0.0:${httpPort}`);
-    console.log(`WebSocket Server running at ws://0.0.0.0:${wsPort}`);
+    console.log('WebSocket Server attached to HTTP server (same origin)');
 
     // Check for disconnected clients periodically
     setInterval(() => {
