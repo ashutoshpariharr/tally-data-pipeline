@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: tally-database-loader
+    env: node
+    buildCommand: npm install
+    startCommand: node dist/server.mjs
+    envVars:
+      - key: PORT
+        value: 8997
+      - key: WS_PORT
+        value: 8998
+    healthCheckPath: /
